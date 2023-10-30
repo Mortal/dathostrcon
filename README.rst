@@ -1,4 +1,4 @@
-valve.rcon
+valve_rcon
 ==========
 
 This is a fork of
@@ -13,12 +13,12 @@ a simple ``echo`` command to it.
 
 .. code:: python
 
-    import valve.rcon
+    import valve_rcon
 
     server_address = ("...", 27015)
     password = "top_secret"
 
-    with valve.rcon.rcon_connect(server_address, password) as rcon:
+    with valve_rcon.rcon_connect(server_address, password) as rcon:
         print(rcon("echo Hello, world!"))
 
 
