@@ -2,16 +2,30 @@ valve_rcon
 ==========
 
 This is a fork of
-`python-valve <https://github.com/serverstf/python-valve>`__
-to modernize the rcon client.
+[python-valve](https://github.com/serverstf/python-valve)
+to modernize the rcon client and add specific support for CS2 servers on dathost.
 
-RCON Example
-------------
+
+Usage
+-----
+
+You can use this in RCON-only mode, or Dathost console mode.
+
+* RCON-only mode - works with any arbitrary CS2 server:
+
+        python3 -m valve_rcon -p RCONPASSWORD SERVERADDR:SERVERPORT
+
+* Dathost console mode (obtains rcon password and server ip through Dathost API):
+
+        python3 dathostrcon.py -u USERNAME -p PASSWORD -s SERVERID
+
+
+Python usage example
+--------------------
 
 In this example we connect to a Source server's remote console and issue
 a simple ``echo`` command to it.
 
-.. code:: python
 
     import valve_rcon
 
