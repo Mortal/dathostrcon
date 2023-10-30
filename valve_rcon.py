@@ -55,23 +55,17 @@ class RCONMessage:
         return struct.pack("<iii", size, self.id, self.type) + terminated_body
 
     @classmethod
-    def decode(cls, buffer_: bytes) -> "tuple[RCONMessage, bytes]":
+    def decode(cls, buffer_: bytes) -> "tuple[RCONMessage | None, bytes]":
         size_field_length = struct.calcsize("<i")
         if len(buffer_) < size_field_length:
-            raise RCONMessageError(
-                "Need at least {} bytes; got " "{}".format(
-                    size_field_length, len(buffer_)
-                )
-            )
+            return None, buffer_
         size_field, raw_message = (
             buffer_[:size_field_length],
             buffer_[size_field_length:],
         )
         size = struct.unpack("<i", size_field)[0]
         if len(raw_message) < size:
-            raise RCONMessageError(
-                "Message is {} bytes long " "but got {}".format(size, len(raw_message))
-            )
+            return None, buffer_
         message, remainder = raw_message[:size], raw_message[size:]
         fixed_fields_size = struct.calcsize("<ii")
         fixed_fields, body_and_terminators = (
@@ -150,31 +144,27 @@ class _ResponseBuffer:
         This may or may not consume part or the whole of the buffer.
         """
         while self._buffer:
-            try:
-                n = len(self._buffer)
-                message, self._buffer = RCONMessage.decode(self._buffer)
-                assert len(self._buffer) < n, self._buffer
-            except RCONMessageError as e:
+            message, self._buffer = RCONMessage.decode(self._buffer)
+            if message is None:
                 return
-            else:
-                if message.type is RCONMessageType.RESPONSE_VALUE:
-                    self._partial_responses.append(message)
-                    if len(self._partial_responses) >= 2:
-                        penultimate, last = self._partial_responses[-2:]
-                        if last.body == b"\x00\x01\x00\x00":
-                            self._enqueue_or_discard(
-                                RCONMessage(
-                                    self._partial_responses[0].id,
-                                    RCONMessageType.RESPONSE_VALUE,
-                                    b"".join(
-                                        part.body
-                                        for part in self._partial_responses[:-1]
-                                    ),
-                                )
+            if message.type is RCONMessageType.RESPONSE_VALUE:
+                self._partial_responses.append(message)
+                if len(self._partial_responses) >= 2:
+                    penultimate, last = self._partial_responses[-2:]
+                    if last.body == b"\x00\x01\x00\x00":
+                        self._enqueue_or_discard(
+                            RCONMessage(
+                                self._partial_responses[0].id,
+                                RCONMessageType.RESPONSE_VALUE,
+                                b"".join(
+                                    part.body
+                                    for part in self._partial_responses[:-1]
+                                ),
                             )
-                            del self._partial_responses[:]
-                else:
-                    self._enqueue_or_discard(message)
+                        )
+                        del self._partial_responses[:]
+            else:
+                self._enqueue_or_discard(message)
 
     def feed(self, bytes_):
         """Feed bytes into the buffer."""
@@ -197,19 +187,11 @@ class _ResponseBuffer:
             self._discard_count += 1
 
 
-def _timer(timeout):
-    time_start = time.time()
-    while timeout is None or time.time() - time_start < timeout:
-        yield
-    raise TimeoutError
-
-
 class RCON:
     """Represents an RCON connection."""
 
     _REGEX_CVARLIST = re.compile(r"-{2,}\n(.+?)-{2,}\n", re.MULTILINE | re.DOTALL)
     _socket: socket.socket
-    _timeout: int | None = None
 
     def __init__(self):
         self._responses = _ResponseBuffer()
@@ -224,9 +206,6 @@ class RCON:
         self._socket.sendall(RCONMessage(0, type_, body).encode())
 
     def _read(self):
-        ready, _, _ = select.select([self._socket], [], [], 0)
-        if not ready:
-            return
         assert self._socket is not None
         try:
             i_bytes = self._socket.recv(4096)
@@ -238,26 +217,22 @@ class RCON:
             raise Exception("EOF")
         self._responses.feed(i_bytes)
 
-    def _receive(self, timeout) -> RCONMessage:
-        for _ in _timer(timeout):
+    def _receive(self) -> RCONMessage:
+        while len(self._responses) == 0:
             self._read()
-            if len(self._responses) > 0:
-                return self._responses.pop()
-        raise
+        return self._responses.pop()
 
     def close(self):
         """Close connection to a server."""
         self._socket.close()
         del self._socket
 
-    def execute(self, command, block=True, timeout=None):
-        if timeout is None:
-            timeout = self._timeout
+    def execute(self, command, block=True):
         self._request(RCONMessageType.EXECCOMMAND, command)
         self._request(RCONMessageType.RESPONSE_VALUE, "")
         if block:
             try:
-                return self._receive(timeout)
+                return self._receive()
             except TimeoutError:
                 self._responses.discard()
                 raise
@@ -296,9 +271,8 @@ class ConVar(NamedTuple):
     description: str
 
 
-def rcon_connect(address: tuple[str, int], password: str, timeout: int | None = None) -> RCON:
+def rcon_connect(address: tuple[str, int], password: str) -> RCON:
     rcon = RCON()
-    rcon._timeout = timeout
     rcon._socket = socket.socket(
         socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP
     )
@@ -306,7 +280,7 @@ def rcon_connect(address: tuple[str, int], password: str, timeout: int | None = 
 
     rcon._request(RCONMessageType.AUTH, password)
     try:
-        response = rcon._receive(timeout)
+        response = rcon._receive()
     except OSError:
         raise Exception("Didn't receive a proper authentication response. You might be banned from the server.")
     rcon._responses.clear()
