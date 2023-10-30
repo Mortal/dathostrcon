@@ -9,6 +9,8 @@ from typing import Any
 import aiohttp
 import websockets
 
+import valve_rcon
+
 
 libreadline = ctypes.CDLL("libreadline.so")
 
@@ -41,9 +43,13 @@ async def get_game_servers(args) -> list[Any]:
 async def main2(args):
     servers = await get_game_servers(args)
     server, = [s for s in servers if s["id"] == args.server]
+    rcon_password = server["cs2_settings"]["rcon"]
+    host = server["ip"]
+    port = server["ports"]["game"]
+    rcon = valve_rcon.rcon_connect((host, port), rcon_password)
     console_auth = await get_console_auth(args)
 
-    async with websockets.connect(f"wss://{server['ip']}/console-server/") as ws:
+    async with websockets.connect(f"wss://{host}/console-server/") as ws:
         command = {"cmd": "auth", "args": {"token": console_auth}}
         await ws.send(json.dumps(command))
         response = json.loads(await ws.recv())
@@ -70,48 +76,14 @@ async def main2(args):
                 traceback.print_exc()
 
         print_incoming_task = asyncio.create_task(print_incoming())
-        commands = [
-            "mp_warmup_end",
-            "changelevel",
-            "mp_freezetime",
-        ]
-        maps = [
-            "changelevel de_mirage",
-            "changelevel de_inferno",
-            "changelevel cs_italy",
-        ]
-
-        def completer(text: str, state: int) -> str | None:
-            matches = [m for m in commands if m.startswith(text)]
-            if not matches:
-                if text.split()[0] == "changelevel":
-                    matches = [m for m in maps if m.startswith(text)]
-            if state < len(matches):
-                return matches[state]
-            return None
-
-        readline.parse_and_bind("tab: complete")
-        readline.set_completer_delims("")
-        readline.set_completer(completer)
 
         loop = asyncio.get_running_loop()
-        while True:
-            try:
-                line = await loop.run_in_executor(None, input)
-            except KeyboardInterrupt:
-                print("KeyboardInterrupt")
-                break
-            except asyncio.CancelledError:
-                print("Please use CTRL-D to exit instead of CTRL-C")
-                break
-            except EOFError:
-                break
-            if line.strip() == "exit":
-                break
-            if not line.strip():
-                print("", flush=True)
-                continue
-            await ws.send(json.dumps({"cmd": "sendLine", "args": {"data": line}}))
+        try:
+            await loop.run_in_executor(None, valve_rcon.RCONShell(rcon).cmdloop)
+        except KeyboardInterrupt:
+            print("KeyboardInterrupt")
+        except asyncio.CancelledError:
+            print("Please use CTRL-D to exit instead of CTRL-C")
         print("Closing websocket connection...")
         await ws.close()
         # await print_incoming_task

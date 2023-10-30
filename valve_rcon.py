@@ -7,6 +7,8 @@ import shlex
 import socket
 import struct
 import time
+import traceback
+import readline
 
 from typing import NamedTuple
 
@@ -157,8 +159,7 @@ class _ResponseBuffer:
                                 self._partial_responses[0].id,
                                 RCONMessageType.RESPONSE_VALUE,
                                 b"".join(
-                                    part.body
-                                    for part in self._partial_responses[:-1]
+                                    part.body for part in self._partial_responses[:-1]
                                 ),
                             )
                         )
@@ -273,16 +274,16 @@ class ConVar(NamedTuple):
 
 def rcon_connect(address: tuple[str, int], password: str) -> RCON:
     rcon = RCON()
-    rcon._socket = socket.socket(
-        socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP
-    )
+    rcon._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP)
     rcon._socket.connect(address)
 
     rcon._request(RCONMessageType.AUTH, password)
     try:
         response = rcon._receive()
     except OSError:
-        raise Exception("Didn't receive a proper authentication response. You might be banned from the server.")
+        raise Exception(
+            "Didn't receive a proper authentication response. You might be banned from the server."
+        )
     rcon._responses.clear()
     if response.id == -1:
         raise Exception("Wrong RCON password")
@@ -290,12 +291,14 @@ def rcon_connect(address: tuple[str, int], password: str) -> RCON:
     return rcon
 
 
-class _RCONShell(cmd.Cmd):
-    def __init__(self, address: tuple[str, int], rcon: RCON):
+class RCONShell(cmd.Cmd):
+    def __init__(self, rcon: RCON, prompt="] "):
         super().__init__()
-        self.prompt = "{0}:{1} ] ".format(*address)
+        self.prompt = prompt
         self._rcon = rcon
         self._convars = tuple(self._rcon.cvarlist())
+        self._maps: list[str] | None = None
+        readline.set_completer_delims("")
 
     def _disconnect(self):
         self._rcon.close()
@@ -309,12 +312,53 @@ class _RCONShell(cmd.Cmd):
 
     def completenames(self, text, line, start_index, end_index):
         """Include ConVars in completeable names."""
-        commands = super().completenames(
-            text, line, start_index, end_index
-        )
-        return commands + [
+        commands = super().completenames(text, line, start_index, end_index)
+
+        suggestions = commands + [
             convar.name for convar in self._convars if convar.name.startswith(text)
         ]
+        toks = line.split()
+        if toks and toks[0] == "changelevel" and len(toks) <= 2:
+            # Special handling for changelevel
+            try:
+                map_prefix = "" if len(toks) == 1 else toks[1]
+                if self._maps is None:
+                    self._maps = self._rcon.execute("maps *").text.split()
+                maps = [
+                    m
+                    for m in self._maps
+                    if not m.endswith(
+                        (
+                            "_vanity",
+                            "_prefab",
+                            "_settings",
+                        )
+                    )
+                    and not m.startswith(
+                        (
+                            "editor/",
+                            "error",
+                            "lobby_",
+                            "prefabs/",
+                            "templates/",
+                            "ui/",
+                            "workshop_preview_",
+                        )
+                    )
+                    and m.startswith(map_prefix)
+                ]
+                if len(toks) == 1:
+                    suggestion_prefix = line
+                    if not suggestion_prefix.endswith(" "):
+                        suggestion_prefix += " "
+                else:
+                    suggestion_prefix = line.rpartition(toks[1])[0]
+                return [suggestion_prefix + m for m in maps]
+            except Exception:
+                traceback.print_exc()
+                raise
+
+        return suggestions
 
     def do_exit(self, _):
         print("Press CTRL-D to exit")
@@ -344,7 +388,7 @@ def _main(argv=None):
     rcon = rcon_connect(address, args.password)
     command = args.execute
     if command is None:
-        _RCONShell(address, rcon).cmdloop()
+        RCONShell(rcon, "{0}:{1} ] ".format(*address)).cmdloop()
     else:
         print(rcon.execute(command).text)
 
